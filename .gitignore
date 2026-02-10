@@ -12,3 +12,4 @@ wheels/
 # Downloaded data and database
 data/
 records.db
+.cache/

@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 import typer
 from bs4 import BeautifulSoup, Tag
@@ -38,14 +38,18 @@ def abbreviate_age_class(raw: str, *, birth_year: int | None = None, competition
             rest = raw[len(long):].strip()
             if not rest:
                 return short
-            # For "18/19" -> resolve using birth year
-            slash_match = re.match(r"(\d+)/(\d+)", rest)
-            if slash_match:
+            # For "18/19" or "15-19" -> resolve using birth year
+            range_match = re.match(r"(\d+)[/-](\d+)", rest)
+            if range_match:
+                # Veterans use bracket start ("30-34" -> "MV30")
+                if short in ("MV", "KV"):
+                    return short + range_match.group(1)
                 if birth_year is not None and competition_year is not None:
                     age = competition_year - birth_year
-                    return short + str(age)
-                return short + slash_match.group(1)
-            # For veterans "30-34" -> take first number "30"
+                    # "Menn Junior 15-19" -> G{age}, "Kvinner Junior 15-19" -> J{age}
+                    prefix = {"MJ": "G", "KJ": "J"}.get(short, short)
+                    return prefix + str(age)
+                return short + range_match.group(1)
             age_match = re.match(r"(\d+)", rest)
             if age_match:
                 return short + age_match.group(1)
@@ -53,9 +57,18 @@ def abbreviate_age_class(raw: str, *, birth_year: int | None = None, competition
     raise ValueError(f"Unknown age class: {raw}")
 
 
+_RESULT_RE = re.compile(r"^[\d,:.\-]+$")
+
+
 def clean_result(raw: str) -> str:
-    """Strip wind info and hand-timing marker: '7,94(+1,8)' -> '7,94', '4,30,98+' -> '4,30,98'."""
-    return raw.split("(")[0].strip().rstrip("+")
+    """Strip wind info and hand-timing marker: '7,94(+1,8)' -> '7,94', '4,30,98+' -> '4,30,98'.
+
+    Raises ValueError if the cleaned result doesn't look like a valid number.
+    """
+    cleaned = raw.split("(")[0].strip().rstrip("+")
+    if not _RESULT_RE.match(cleaned):
+        raise ValueError(f"Invalid result: {cleaned!r}")
+    return cleaned
 
 
 def parse_year(date_str: str) -> int:
@@ -101,7 +114,6 @@ def parse_records(html: str, *, indoor: bool = False) -> list[ClubRecord]:
             if current_age_class is None or current_event is None:
                 continue
 
-            # Find first data row (with <td> cells)
             for tr in tag.find_all("tr"):
                 cells = tr.find_all("td")
                 if not cells or len(cells) < 6:
@@ -109,33 +121,35 @@ def parse_records(html: str, *, indoor: bool = False) -> list[ClubRecord]:
 
                 result_raw = cells[0].get_text(strip=True)
                 if result_raw == "-----":
-                    break
+                    continue
 
                 a_tag = cells[1].find("a")
                 if a_tag is None:
-                    break
+                    continue
 
                 name = a_tag.get_text(strip=True)
                 birth_date_str = cells[2].get_text(strip=True)
                 date_str = cells[5].get_text(strip=True)
-                competition_year = parse_year(date_str)
 
-                records.append(
-                    ClubRecord(
-                        age_class=abbreviate_age_class(
-                            current_age_class,
-                            birth_year=parse_year(birth_date_str),
-                            competition_year=competition_year,
-                        ),
-                        event=current_event,
-                        name=name,
-                        result=clean_result(result_raw),
-                        year=competition_year,
-                        indoor=indoor,
+                try:
+                    competition_year = parse_year(date_str)
+                    records.append(
+                        ClubRecord(
+                            age_class=abbreviate_age_class(
+                                current_age_class,
+                                birth_year=parse_year(birth_date_str),
+                                competition_year=competition_year,
+                            ),
+                            event=current_event,
+                            name=name,
+                            result=clean_result(result_raw),
+                            year=competition_year,
+                            indoor=indoor,
+                        )
                     )
-                )
-                event_captured = True
-                break
+                except (ValueError, IndexError):
+                    continue
+            event_captured = True
 
     return records
 
@@ -227,12 +241,39 @@ def pick_best_record(records: list[ClubRecord], category: str) -> ClubRecord:
     return min(records, key=lambda r: parse_result_value(r.result, event_category=category) * (1 if lower_better else -1))
 
 
+def best_per_event(records: list[ClubRecord]) -> list[ClubRecord]:
+    """Deduplicate to one best record per (age_class, event)."""
+    grouped: dict[tuple[str, str], list[ClubRecord]] = {}
+    for r in records:
+        grouped.setdefault((r.age_class, r.event), []).append(r)
+    result: list[ClubRecord] = []
+    for key, group in grouped.items():
+        try:
+            cat = classify_event(key[1])
+            result.append(pick_best_record(group, cat))
+        except ValueError:
+            pass
+    return result
+
+
 _FEDERATION_URL = "https://www.minfriidrettsstatistikk.info/php/KlubbStatistikk.php"
 _CLUB_ID = "176"  # IL i BUL Tromsø
 
 
+_CACHE_DIR = Path(".cache/federation")
+_CACHE_MAX_AGE = 3600  # seconds
+
+
 def _fetch_federation_html(*, outdoor: bool) -> str:
-    """Fetch club statistics HTML from the federation site."""
+    """Fetch club statistics HTML from the federation site, with local file cache."""
+    import time
+
+    cache_file = _CACHE_DIR / ("outdoor.html" if outdoor else "indoor.html")
+    if cache_file.exists():
+        age = time.time() - cache_file.stat().st_mtime
+        if age < _CACHE_MAX_AGE:
+            return cache_file.read_text(encoding="utf-8")
+
     import httpx
 
     resp = httpx.get(
@@ -244,9 +285,11 @@ def _fetch_federation_html(*, outdoor: bool) -> str:
             "outdoor": "Y" if outdoor else "N",
             "showseason": "0",
         },
-        timeout=30,
+        timeout=60,
     )
     resp.raise_for_status()
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(resp.text, encoding="utf-8")
     return resp.text
 
 
@@ -268,22 +311,35 @@ app = typer.Typer(invoke_without_command=True)
 @app.callback(invoke_without_command=True)
 def default_command(
     ctx: typer.Context,
-    outdoor: Annotated[bool, typer.Option(help="Compare outdoor records only")] = False,
-    indoor: Annotated[bool, typer.Option(help="Compare indoor records only")] = False,
+    outdoor: Annotated[bool, typer.Option(help="Outdoor records only")] = False,
+    indoor: Annotated[bool, typer.Option(help="Indoor records only")] = False,
+    year: Annotated[Optional[int], typer.Option(help="Show all club records set this year")] = None,
 ) -> None:
     """Compare federation stats against website baseline to find new records."""
     if ctx.invoked_subcommand is not None:
         return
+
     from .db import init_db, DEFAULT_DB_PATH
-    from .compare import compare_federation_vs_baseline
+    from .compare import find_new_records, print_new_records, current_best_records
 
     if not DEFAULT_DB_PATH.exists():
         print("No database found. Run 'scrape' then 'import-website' first.")
         raise typer.Exit(1)
 
     conn = init_db()
-    compare_federation_vs_baseline(conn, outdoor=outdoor, indoor=indoor)
+
+    if year is not None:
+        records = [r for r in current_best_records(conn, outdoor=outdoor, indoor=indoor) if r.year == year]
+        conn.close()
+        for r in records:
+            suffix = "i" if r.indoor else ""
+            print(f"{r.age_class:6s} {r.event:30s} {r.result + suffix:>10s}  {r.name}")
+        print(f"\n{len(records)} records from {year}.")
+        return
+
+    new_records = find_new_records(conn, outdoor=outdoor, indoor=indoor)
     conn.close()
+    print_new_records(new_records)
 
 
 @app.command()
