@@ -17,8 +17,12 @@ class ClubRecord(BaseModel):
     indoor: bool = False
 
 
-def abbreviate_age_class(raw: str) -> str:
-    """Map e.g. 'Gutter 13' -> 'G13', 'Menn Senior' -> 'MS', 'Menn veteran 30-34' -> 'MV30'."""
+def abbreviate_age_class(raw: str, *, birth_year: int | None = None, competition_year: int | None = None) -> str:
+    """Map e.g. 'Gutter 13' -> 'G13', 'Menn Senior' -> 'MS', 'Menn veteran 30-34' -> 'MV30'.
+
+    For combined classes like 'Gutter 18/19', uses birth_year and competition_year
+    to determine actual age (you compete as 18 the year you turn 18).
+    """
     raw = raw.strip()
     prefix_map: dict[str, str] = {
         "Gutter": "G",
@@ -35,14 +39,17 @@ def abbreviate_age_class(raw: str) -> str:
             rest = raw[len(long):].strip()
             if not rest:
                 return short
+            # For "18/19" -> resolve using birth year
+            slash_match = re.match(r"(\d+)/(\d+)", rest)
+            if slash_match:
+                if birth_year is not None and competition_year is not None:
+                    age = competition_year - birth_year
+                    return short + str(age)
+                return short + slash_match.group(1)
             # For veterans "30-34" -> take first number "30"
             age_match = re.match(r"(\d+)", rest)
             if age_match:
                 return short + age_match.group(1)
-            # For "18/19" -> "18"
-            slash_match = re.match(r"(\d+)/", rest)
-            if slash_match:
-                return short + slash_match.group(1)
             return short + rest
     raise ValueError(f"Unknown age class: {raw}")
 
@@ -110,15 +117,21 @@ def parse_records(html: str, *, indoor: bool = False) -> list[ClubRecord]:
                     break
 
                 name = a_tag.get_text(strip=True)
+                birth_date_str = cells[2].get_text(strip=True)
                 date_str = cells[5].get_text(strip=True)
+                competition_year = parse_year(date_str)
 
                 records.append(
                     ClubRecord(
-                        age_class=abbreviate_age_class(current_age_class),
+                        age_class=abbreviate_age_class(
+                            current_age_class,
+                            birth_year=parse_year(birth_date_str),
+                            competition_year=competition_year,
+                        ),
                         event=current_event,
                         name=name,
                         result=clean_result(result_raw),
-                        year=parse_year(date_str),
+                        year=competition_year,
                         indoor=indoor,
                     )
                 )
@@ -146,7 +159,7 @@ EVENT_TYPE_ORDER: list[str] = [
     "Mangekamp",
 ]
 
-_SPRINT_DISTANCES = {"60", "100", "200", "300", "400"}
+_SPRINT_DISTANCES = {"60", "100", "150", "200", "300", "400"}
 _MIDDLE_DISTANCES = {"600", "800", "1000", "1500"}
 _LONG_DISTANCES = {"2000", "3000", "5000", "10000"}
 
@@ -156,7 +169,7 @@ def classify_event(event: str) -> str:
     lower = event.lower()
 
     # Check specific keywords first (order matters)
-    if "hekk" in lower or "hinder" in lower:
+    if "hekk" in lower or "hinder" in lower or " hk" in lower or lower.endswith("hk"):
         return "Hekk & hinder"
     if "kappgang" in lower:
         return "Kappgang"
@@ -180,13 +193,15 @@ def classify_event(event: str) -> str:
         return "Spyd"
     if "vektkast" in lower:
         return "Vektkast"
-    if "halvmaraton" in lower:
+    if "halvmaraton" in lower or "maraton" in lower:
         return "Langdistanse"
     if "mile" in lower:
         return "Mellomdistanse"
+    if lower.endswith("km"):
+        return "Langdistanse"
 
-    # Distance-based classification
-    m = re.match(r"(\d+)\s*meter", lower)
+    # Distance-based classification: "100 meter" or "100m"
+    m = re.match(r"(\d+)\s*(?:meter|m)\b", lower)
     if m:
         dist = m.group(1)
         if dist in _SPRINT_DISTANCES:
@@ -204,24 +219,31 @@ _LOWER_IS_BETTER_CATEGORIES = {
 }
 
 
-def parse_result_value(result: str) -> float:
-    """Parse a result string like '7,94', '1:23,45', '1,05,40' into a comparable float."""
-    # Normalize: colon or comma-separated minutes (e.g. "1:23,45" or "1,05,40")
+def parse_result_value(result: str, *, event_category: str = "") -> float:
+    """Parse a result string like '7,94', '1:23,45', '1,05,40' into a comparable float.
+
+    For Langdistanse/Kappgang, 2-part comma results (e.g. '56,11') are min:sec.
+    For other events, 2-part comma results (e.g. '10,50') are decimal seconds/meters.
+    """
     normalized = result.replace(",", ".")
     if ":" in normalized:
         parts = normalized.split(":")
-        return float(parts[0]) * 60 + float(parts[1])
-    # 3-part dot format: m.ss.hh (e.g. "1.05.40" = 1min 05.40s)
+        return round(float(parts[0]) * 60 + float(parts[1]), 2)
+    # 3-part dot format: m.ss.f (e.g. "1.05.40" = 1min 05.40s, "10.44.1" = 10min 44.1s)
     dot_parts = normalized.split(".")
     if len(dot_parts) == 3:
-        return int(dot_parts[0]) * 60 + int(dot_parts[1]) + int(dot_parts[2]) / 100
+        frac = float(f"0.{dot_parts[2]}")
+        return round(int(dot_parts[0]) * 60 + int(dot_parts[1]) + frac, 2)
+    # 2-part: for road/walking events, interpret as min:sec (e.g. "56,11" = 56:11)
+    if len(dot_parts) == 2 and event_category in ("Langdistanse", "Kappgang"):
+        return round(int(dot_parts[0]) * 60 + int(dot_parts[1]), 2)
     return float(normalized)
 
 
 def pick_best_record(records: list[ClubRecord], category: str) -> ClubRecord:
     """Pick the best record from a list — lowest time or highest distance/points."""
     lower_better = category in _LOWER_IS_BETTER_CATEGORIES
-    return min(records, key=lambda r: parse_result_value(r.result) * (1 if lower_better else -1))
+    return min(records, key=lambda r: parse_result_value(r.result, event_category=category) * (1 if lower_better else -1))
 
 
 def age_class_sort_key(abbrev: str) -> tuple[int, int]:
@@ -297,19 +319,67 @@ def print_grouped(records: list[ClubRecord]) -> None:
     print()
 
 
-app = typer.Typer()
+app = typer.Typer(invoke_without_command=True)
 
 
-@app.command()
-def main(
+@app.callback(invoke_without_command=True)
+def default_command(
+    ctx: typer.Context,
     outdoor: Annotated[bool, typer.Option(help="Parse outdoor records only")] = False,
     indoor: Annotated[bool, typer.Option(help="Parse indoor records only")] = False,
     year: Annotated[Optional[int], typer.Option(help="Show only records from this year")] = None,
 ) -> None:
+    """Show best federation records (default command)."""
+    if ctx.invoked_subcommand is not None:
+        return
     records = best_records(load_records(outdoor=outdoor, indoor=indoor))
     if year is not None:
         records = [r for r in records if r.year == year]
     print_grouped(records)
+
+
+@app.command()
+def scrape() -> None:
+    """Download club record pages from bul-tromso.no."""
+    from scrape import scrape_all
+
+    scrape_all(Path("data/website"))
+
+
+@app.command("import-website")
+def import_website() -> None:
+    """Parse downloaded website HTML and import into SQLite baseline."""
+    from parse_website import parse_all_website_pages
+    from db import init_db, insert_records
+
+    data_dir = Path("data/website")
+    if not data_dir.exists():
+        print("No data/website/ directory. Run 'scrape' first.")
+        raise typer.Exit(1)
+
+    records = parse_all_website_pages(data_dir)
+    conn = init_db()
+    count = insert_records(conn, records, "website")
+    conn.close()
+    print(f"\nImported {count} records into database.")
+
+
+@app.command()
+def compare(
+    outdoor: Annotated[bool, typer.Option(help="Compare outdoor records only")] = False,
+    indoor: Annotated[bool, typer.Option(help="Compare indoor records only")] = False,
+) -> None:
+    """Compare federation stats against website baseline."""
+    from db import init_db, DEFAULT_DB_PATH
+    from compare import compare_federation_vs_baseline
+
+    if not DEFAULT_DB_PATH.exists():
+        print("No database found. Run 'import-website' first.")
+        raise typer.Exit(1)
+
+    conn = init_db()
+    compare_federation_vs_baseline(conn, outdoor=outdoor, indoor=indoor)
+    conn.close()
 
 
 if __name__ == "__main__":
