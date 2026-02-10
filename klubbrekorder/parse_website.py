@@ -3,7 +3,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup, Tag
 
-from main import ClubRecord
+from .main import ClubRecord
 
 
 def _clean_website_result(raw: str) -> tuple[str, bool]:

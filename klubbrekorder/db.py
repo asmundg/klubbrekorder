@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 
-from main import ClubRecord, parse_result_value
+from .main import ClubRecord, parse_result_value
 
 DEFAULT_DB_PATH = Path("records.db")
 
@@ -66,7 +66,7 @@ def get_best_per_event(conn: sqlite3.Connection, source: str) -> dict[tuple[str,
     """
     records = get_records(conn, source)
 
-    from main import classify_event, pick_best_record
+    from .main import classify_event, pick_best_record
 
     grouped: dict[tuple[str, str], list[ClubRecord]] = {}
     for r in records:

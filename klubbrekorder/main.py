@@ -1,7 +1,6 @@
 import re
-from collections import defaultdict
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from bs4 import BeautifulSoup, Tag
@@ -141,24 +140,6 @@ def parse_records(html: str, *, indoor: bool = False) -> list[ClubRecord]:
     return records
 
 
-EVENT_TYPE_ORDER: list[str] = [
-    "Sprint",
-    "Mellomdistanse",
-    "Langdistanse",
-    "Hekk & hinder",
-    "Kappgang",
-    "Høyde",
-    "Stav",
-    "Lengde",
-    "Tresteg",
-    "Kule",
-    "Diskos",
-    "Slegge",
-    "Spyd",
-    "Vektkast",
-    "Mangekamp",
-]
-
 _SPRINT_DISTANCES = {"60", "100", "150", "200", "300", "400"}
 _MIDDLE_DISTANCES = {"600", "800", "1000", "1500"}
 _LONG_DISTANCES = {"2000", "3000", "5000", "10000"}
@@ -246,31 +227,27 @@ def pick_best_record(records: list[ClubRecord], category: str) -> ClubRecord:
     return min(records, key=lambda r: parse_result_value(r.result, event_category=category) * (1 if lower_better else -1))
 
 
-def age_class_sort_key(abbrev: str) -> tuple[int, int]:
-    """Return a sortable tuple so age classes print in logical order.
+_FEDERATION_URL = "https://www.minfriidrettsstatistikk.info/php/KlubbStatistikk.php"
+_CLUB_ID = "176"  # IL i BUL Tromsø
 
-    Order: G (boys) by age, J (girls) by age, MJ, MS, KJ, KS, MV by age, KV by age.
-    """
-    order_map: dict[str, int] = {
-        "G": 0,
-        "J": 1,
-        "MJ": 2,
-        "MS": 3,
-        "KJ": 4,
-        "KS": 5,
-        "MV": 6,
-        "KV": 7,
-    }
 
-    # Extract prefix and optional number
-    m = re.match(r"([A-Z]+)(\d*)", abbrev)
-    if not m:
-        return (99, 0)
+def _fetch_federation_html(*, outdoor: bool) -> str:
+    """Fetch club statistics HTML from the federation site."""
+    import httpx
 
-    prefix = m.group(1)
-    num = int(m.group(2)) if m.group(2) else 0
-    group = order_map.get(prefix, 99)
-    return (group, num)
+    resp = httpx.get(
+        _FEDERATION_URL,
+        params={
+            "showclub": _CLUB_ID,
+            "showclass": "0",
+            "showevent": "0",
+            "outdoor": "Y" if outdoor else "N",
+            "showseason": "0",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.text
 
 
 def load_records(*, outdoor: bool, indoor: bool) -> list[ClubRecord]:
@@ -279,44 +256,10 @@ def load_records(*, outdoor: bool, indoor: bool) -> list[ClubRecord]:
 
     all_records: list[ClubRecord] = []
     if do_outdoor:
-        all_records.extend(parse_records(Path("outdoor.html").read_text(), indoor=False))
+        all_records.extend(parse_records(_fetch_federation_html(outdoor=True), indoor=False))
     if do_indoor:
-        all_records.extend(parse_records(Path("indoor.html").read_text(), indoor=True))
+        all_records.extend(parse_records(_fetch_federation_html(outdoor=False), indoor=True))
     return all_records
-
-
-def best_records(records: list[ClubRecord]) -> list[ClubRecord]:
-    """Deduplicate to one best record per (event, age_class)."""
-    grouped: dict[str, dict[str, dict[str, list[ClubRecord]]]] = defaultdict(
-        lambda: defaultdict(lambda: defaultdict(list))
-    )
-    for r in records:
-        cat = classify_event(r.event)
-        grouped[cat][r.event][r.age_class].append(r)
-
-    result: list[ClubRecord] = []
-    for cat in EVENT_TYPE_ORDER:
-        for event_name in sorted(grouped.get(cat, {})):
-            for ac in sorted(grouped[cat][event_name], key=age_class_sort_key):
-                result.append(pick_best_record(grouped[cat][event_name][ac], cat))
-    return result
-
-
-def print_grouped(records: list[ClubRecord]) -> None:
-    current_cat: str | None = None
-    current_event: str | None = None
-    for r in records:
-        cat = classify_event(r.event)
-        if cat != current_cat:
-            current_cat = cat
-            current_event = None
-            print(f"\n=== {cat} ===\n")
-        if r.event != current_event:
-            current_event = r.event
-            print(r.event)
-        suffix = "i" if r.indoor else ""
-        print(f"  {r.age_class:6s} {r.name:30s} {r.result:>10s}{suffix}  {r.year}")
-    print()
 
 
 app = typer.Typer(invoke_without_command=True)
@@ -325,23 +268,28 @@ app = typer.Typer(invoke_without_command=True)
 @app.callback(invoke_without_command=True)
 def default_command(
     ctx: typer.Context,
-    outdoor: Annotated[bool, typer.Option(help="Parse outdoor records only")] = False,
-    indoor: Annotated[bool, typer.Option(help="Parse indoor records only")] = False,
-    year: Annotated[Optional[int], typer.Option(help="Show only records from this year")] = None,
+    outdoor: Annotated[bool, typer.Option(help="Compare outdoor records only")] = False,
+    indoor: Annotated[bool, typer.Option(help="Compare indoor records only")] = False,
 ) -> None:
-    """Show best federation records (default command)."""
+    """Compare federation stats against website baseline to find new records."""
     if ctx.invoked_subcommand is not None:
         return
-    records = best_records(load_records(outdoor=outdoor, indoor=indoor))
-    if year is not None:
-        records = [r for r in records if r.year == year]
-    print_grouped(records)
+    from .db import init_db, DEFAULT_DB_PATH
+    from .compare import compare_federation_vs_baseline
+
+    if not DEFAULT_DB_PATH.exists():
+        print("No database found. Run 'scrape' then 'import-website' first.")
+        raise typer.Exit(1)
+
+    conn = init_db()
+    compare_federation_vs_baseline(conn, outdoor=outdoor, indoor=indoor)
+    conn.close()
 
 
 @app.command()
 def scrape() -> None:
     """Download club record pages from bul-tromso.no."""
-    from scrape import scrape_all
+    from .scrape import scrape_all
 
     scrape_all(Path("data/website"))
 
@@ -349,8 +297,8 @@ def scrape() -> None:
 @app.command("import-website")
 def import_website() -> None:
     """Parse downloaded website HTML and import into SQLite baseline."""
-    from parse_website import parse_all_website_pages
-    from db import init_db, insert_records
+    from .parse_website import parse_all_website_pages
+    from .db import init_db, insert_records
 
     data_dir = Path("data/website")
     if not data_dir.exists():
@@ -364,23 +312,5 @@ def import_website() -> None:
     print(f"\nImported {count} records into database.")
 
 
-@app.command()
-def compare(
-    outdoor: Annotated[bool, typer.Option(help="Compare outdoor records only")] = False,
-    indoor: Annotated[bool, typer.Option(help="Compare indoor records only")] = False,
-) -> None:
-    """Compare federation stats against website baseline."""
-    from db import init_db, DEFAULT_DB_PATH
-    from compare import compare_federation_vs_baseline
-
-    if not DEFAULT_DB_PATH.exists():
-        print("No database found. Run 'import-website' first.")
-        raise typer.Exit(1)
-
-    conn = init_db()
-    compare_federation_vs_baseline(conn, outdoor=outdoor, indoor=indoor)
-    conn.close()
 
 
-if __name__ == "__main__":
-    app()

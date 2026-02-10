@@ -11,6 +11,12 @@ dependencies = [
     "typer>=0.21.1",
 ]
 
+[project.scripts]
+klubbrekorder = "klubbrekorder.main:app"
+
+[tool.setuptools.packages.find]
+include = ["klubbrekorder*"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",

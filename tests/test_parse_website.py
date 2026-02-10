@@ -1,4 +1,4 @@
-from parse_website import (
+from klubbrekorder.parse_website import (
     _clean_website_result,
     _is_relay,
     parse_format_a,

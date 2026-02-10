@@ -1,4 +1,4 @@
-from normalize import normalize_event
+from klubbrekorder.normalize import normalize_event
 
 
 class TestNormalizeDistances:

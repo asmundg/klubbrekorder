@@ -1,5 +1,5 @@
-from main import ClubRecord
-from db import init_db, insert_records, get_best_per_event
+from klubbrekorder.main import ClubRecord
+from klubbrekorder.db import init_db, insert_records, get_best_per_event
 
 
 class TestDbOperations:

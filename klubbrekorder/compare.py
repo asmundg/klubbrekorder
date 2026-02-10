@@ -1,14 +1,14 @@
 import sqlite3
 
-from main import (
+from .main import (
     ClubRecord,
     _LOWER_IS_BETTER_CATEGORIES,
     classify_event,
     load_records,
     parse_result_value,
 )
-from db import get_best_per_event
-from normalize import normalize_event
+from .db import get_best_per_event
+from .normalize import normalize_event
 
 
 def compare_federation_vs_baseline(
