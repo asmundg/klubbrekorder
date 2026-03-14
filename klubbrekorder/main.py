@@ -344,22 +344,13 @@ def default_command(
 
 @app.command()
 def scrape() -> None:
-    """Download club record pages from bul-tromso.no."""
+    """Download club record pages and import into SQLite baseline."""
     from .scrape import scrape_all
-
-    scrape_all(Path("data/website"))
-
-
-@app.command("import-website")
-def import_website() -> None:
-    """Parse downloaded website HTML and import into SQLite baseline."""
     from .parse_website import parse_all_website_pages
     from .db import init_db, insert_records
 
     data_dir = Path("data/website")
-    if not data_dir.exists():
-        print("No data/website/ directory. Run 'scrape' first.")
-        raise typer.Exit(1)
+    scrape_all(data_dir)
 
     records = parse_all_website_pages(data_dir)
     conn = init_db()

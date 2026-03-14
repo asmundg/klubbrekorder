@@ -14,8 +14,9 @@ dependencies = [
 [project.scripts]
 klubbrekorder = "klubbrekorder.main:app"
 
-[tool.setuptools.packages.find]
-include = ["klubbrekorder*"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
