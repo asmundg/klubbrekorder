@@ -69,13 +69,17 @@ from klubbrekorder.compare import competing_classes, find_new_records
 
 
 class TestCompetingClasses:
-    def test_youth_counts_for_u20_and_u23(self) -> None:
-        assert competing_classes("G17") == ["G17", "MJ20", "MJ23"]
-        assert competing_classes("J19") == ["J19", "KJ20", "KJ23"]
+    def test_from_15_counts_for_junior_and_senior(self) -> None:
+        assert competing_classes("G15") == ["G15", "MJ20", "MJ23", "MS"]
+        assert competing_classes("J19") == ["J19", "KJ20", "KJ23", "KS"]
 
-    def test_over_19_counts_for_u23_only(self) -> None:
-        assert competing_classes("G20") == ["G20", "MJ23"]
-        assert competing_classes("J22") == ["J22", "KJ23"]
+    def test_over_19_skips_u20(self) -> None:
+        assert competing_classes("G20") == ["G20", "MJ23", "MS"]
+        assert competing_classes("J22") == ["J22", "KJ23", "KS"]
+
+    def test_under_15_counts_for_own_class_only(self) -> None:
+        assert competing_classes("G14") == ["G14"]
+        assert competing_classes("J13") == ["J13"]
 
     def test_other_classes_unchanged(self) -> None:
         assert competing_classes("MS") == ["MS"]

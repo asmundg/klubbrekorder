@@ -13,14 +13,16 @@ from .normalize import normalize_event
 
 
 def competing_classes(age_class: str) -> list[str]:
-    """Record classes a result in age_class competes for: 'G17' -> ['G17', 'MJ20', 'MJ23']."""
-    m = re.fullmatch(r"([GJ])(\d+)", age_class)
-    if not m:
-        return [age_class]
-    junior = {"G": "MJ", "J": "KJ"}[m.group(1)]
-    age = int(m.group(2))
-    return [age_class] + [f"{junior}{limit}" for limit in (20, 23) if age < limit]
+    """Record classes a result in age_class competes for: 'G17' -> ['G17', 'MJ20', 'MJ23', 'MS'].
 
+    From 15, a youth result also counts for the junior classes the athlete is young enough for, and for senior.
+    """
+    m = re.fullmatch(r"([GJ])(\d+)", age_class)
+    if not m or int(m.group(2)) < 15:
+        return [age_class]
+    adult = {"G": "M", "J": "K"}[m.group(1)]
+    age = int(m.group(2))
+    return [age_class] + [f"{adult}J{limit}" for limit in (20, 23) if age < limit] + [f"{adult}S"]
 
 def _group_by_class_and_event(records: list[ClubRecord]) -> dict[tuple[str, str], list[ClubRecord]]:
     """Group federation records by (record class, normalized event), counting youth results toward junior classes."""
