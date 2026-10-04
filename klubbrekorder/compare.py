@@ -9,7 +9,7 @@ from .main import (
     parse_result_value,
 )
 from .db import get_best_per_event
-from .normalize import normalize_event
+from .normalize import record_event
 
 
 def competing_classes(age_class: str) -> list[str]:
@@ -28,9 +28,9 @@ def _group_by_class_and_event(records: list[ClubRecord]) -> dict[tuple[str, str]
     """Group federation records by (record class, normalized event), counting youth results toward junior classes."""
     grouped: dict[tuple[str, str], list[ClubRecord]] = {}
     for r in records:
-        norm = normalize_event(r.event)
         for ac in competing_classes(r.age_class):
-            grouped.setdefault((ac, norm), []).append(r.model_copy(update={"age_class": ac}))
+            rec = r.model_copy(update={"age_class": ac})
+            grouped.setdefault((ac, record_event(rec)), []).append(rec)
     return grouped
 
 
@@ -50,7 +50,7 @@ def find_new_records(
     # Build normalized lookup: (age_class, normalized_event) -> ClubRecord
     baseline_norm: dict[tuple[str, str], ClubRecord] = {}
     for (ac, event), rec in baseline.items():
-        norm = normalize_event(event)
+        norm = record_event(rec)
         key = (ac, norm)
         if key not in baseline_norm:
             baseline_norm[key] = rec
@@ -106,7 +106,7 @@ def find_new_records(
         if is_better:
             new_records.append((best_fed, baseline_rec))
 
-    new_records.sort(key=lambda x: (x[0].age_class, normalize_event(x[0].event)))
+    new_records.sort(key=lambda x: (x[0].age_class, record_event(x[0])))
     return new_records
 
 
@@ -122,7 +122,7 @@ def current_best_records(
     # Start with baseline as the current bests (keyed by normalized event)
     bests: dict[tuple[str, str], ClubRecord] = {}
     for (ac, event), rec in baseline.items():
-        norm = normalize_event(event)
+        norm = record_event(rec)
         key = (ac, norm)
         if key not in bests:
             bests[key] = rec
@@ -180,13 +180,13 @@ def print_new_records(new_records: list[tuple[ClubRecord, ClubRecord]]) -> None:
         suffix = "i" if fed.indoor else ""
         old_result = base.result
         # Flag suspiciously small improvements (likely format artifacts)
-        cat = classify_event(normalize_event(fed.event))
+        cat = classify_event(record_event(fed))
         fed_val = parse_result_value(fed.result, event_category=cat)
         base_val = parse_result_value(base.result, event_category=cat)
         diff = abs(fed_val - base_val)
         flag = "?" if diff < 1.0 and fed_val > 10 else " "
         print(
-            f"{flag} {fed.age_class:6s} {normalize_event(fed.event):30s} "
+            f"{flag} {fed.age_class:6s} {record_event(fed):30s} "
             f"{fed.result + suffix:>10s} "
             f"{fed.name:30s} {fed.year:>6d} {old_result:>10s}"
         )

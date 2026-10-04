@@ -1,5 +1,7 @@
 import re
 
+from .main import ClubRecord
+
 
 # Standard hurdle heights: meters -> cm mapping
 # These are the official IAAF hurdle heights
@@ -195,3 +197,40 @@ def normalize_event(raw: str) -> str:
 
     # If nothing matched, return as-is
     return s
+
+
+_MEN_SPEC = {
+    "Kule": "Kule 7,26kg", "Diskos": "Diskos 2,0kg", "Slegge": "Slegge 7,26kg", "Spyd": "Spyd 0,8kg",
+    "Vektkast": "Vektkast 15,88kg", "60m HK": "60m HK 106,7", "110m HK": "110m HK 106,7",
+    "200m HK": "200m HK 76,2", "400m HK": "400m HK 91,4",
+    "2000m hinder": "2000m hinder 91,4", "3000m hinder": "3000m hinder 91,4",
+}
+_WOMEN_SPEC = {
+    "Kule": "Kule 4,0kg", "Diskos": "Diskos 1,0kg", "Slegge": "Slegge 4,0kg", "Spyd": "Spyd 0,6kg",
+    "Vektkast": "Vektkast 9,08kg", "60m HK": "60m HK 84", "100m HK": "100m HK 84",
+    "200m HK": "200m HK 76,2", "400m HK": "400m HK 76,2",
+    "2000m hinder": "2000m hinder 76,2", "3000m hinder": "3000m hinder 76,2",
+}
+# Implement and hurdle height the website means when a senior or junior page names an event without one.
+# MJ20 records are from before U20 men got lighter implements; its page names throw weights explicitly.
+_CLASS_SPEC: dict[str, dict[str, str]] = {
+    "MS": _MEN_SPEC,
+    "MJ23": _MEN_SPEC,
+    "MJ20": {k: v for k, v in _MEN_SPEC.items() if "HK" in k},
+    "KS": _WOMEN_SPEC,
+    "KJ23": _WOMEN_SPEC,
+    "KJ20": _WOMEN_SPEC,
+}
+
+# New javelin models: men's 800g from 1986, 600g from 1999.
+_NEW_JAVELIN_FROM = {"Spyd 0,8kg": 1986, "Spyd 0,6kg": 1999}
+
+
+def record_event(record: ClubRecord) -> str:
+    """Comparison key for a record's event: the normalized name, with the class's default implement or
+    hurdle height when the name has none, and old javelin models kept apart from new ones."""
+    event = normalize_event(record.event)
+    event = _CLASS_SPEC.get(record.age_class, {}).get(event, event)
+    if record.year < _NEW_JAVELIN_FROM.get(event, 0):
+        event += " gammel"
+    return event

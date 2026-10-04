@@ -127,3 +127,39 @@ class TestNormalizeMisc:
         assert normalize_event("Stav") == "Stav"
         assert normalize_event("Tresteg") == "Tresteg"
         assert normalize_event("Tresteg (Sone 0,5m)") == "Tresteg"
+
+
+from klubbrekorder.main import ClubRecord
+from klubbrekorder.normalize import record_event
+
+
+def _rec(age_class: str, event: str, year: int = 2020) -> ClubRecord:
+    return ClubRecord(age_class=age_class, event=event, name="X", result="1", year=year)
+
+
+class TestRecordEvent:
+    def test_bare_senior_events_get_class_spec(self) -> None:
+        assert record_event(_rec("KS", "Slegge")) == "Slegge 4,0kg"
+        assert record_event(_rec("MS", "110m HK")) == "110m HK 106,7"
+        assert record_event(_rec("KJ20", "100m HK")) == "100m HK 84"
+        assert record_event(_rec("MJ23", "3000m hin")) == "3000m hinder 91,4"
+        assert record_event(_rec("MJ20", "110m HK")) == "110m HK 106,7"
+
+    def test_matches_federation_name(self) -> None:
+        assert record_event(_rec("KS", "Slegge")) == record_event(_rec("KS", "Slegge 4,0kg"))
+        assert record_event(_rec("MS", "400m HK")) == record_event(_rec("MS", "400 meter hekk (91,4cm)"))
+
+    def test_explicit_spec_kept(self) -> None:
+        assert record_event(_rec("MJ20", "Kule 6kg")) == "Kule 6,0kg"
+
+    def test_no_default_leaves_bare(self) -> None:
+        assert record_event(_rec("MJ20", "Kule")) == "Kule"
+        assert record_event(_rec("G15", "Vektkast")) == "Vektkast"
+
+    def test_old_javelin_by_year(self) -> None:
+        assert record_event(_rec("MS", "Spyd 800g", 1985)) == "Spyd 0,8kg gammel"
+        assert record_event(_rec("MS", "Spyd 800g", 1986)) == "Spyd 0,8kg"
+        assert record_event(_rec("KJ20", "Spyd <1999", 1991)) == "Spyd 0,6kg gammel"
+        assert record_event(_rec("KJ20", "Spyd >1999", 2021)) == "Spyd 0,6kg"
+        assert record_event(_rec("G13", "Spyd 600g (gammel type)", 1990)) == "Spyd 0,6kg gammel"
+        assert record_event(_rec("J13", "Spyd 400g", 1990)) == "Spyd 0,4kg"
