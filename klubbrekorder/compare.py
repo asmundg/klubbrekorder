@@ -38,22 +38,9 @@ def _group_by_class_and_event(records: list[ClubRecord]) -> dict[tuple[str, str]
 SOURCES = ("website", "short-track")
 
 
-def has_bends(event: str) -> bool:
-    """Whether a normalized event is a running event over 110m, which a short track changes."""
-    try:
-        if classify_event(event) not in _LOWER_IS_BETTER_CATEGORIES:
-            return False
-    except ValueError:
-        return False
-    m = re.search(r"(\d+)m\b", event)
-    return not (m and int(m.group(1)) <= 110)
-
-
 def _counts_for(source: str, r: ClubRecord) -> bool:
-    """Short-track pages take indoor results; main pages take everything but short-track running round bends."""
-    if source == "short-track":
-        return r.indoor
-    return not (r.indoor and has_bends(record_event(r)))
+    """Main pages take every result, indoor ones marked 'i'. Short-track pages take indoor results only."""
+    return r.indoor or source != "short-track"
 
 
 def _best(records: list[ClubRecord], category: str) -> ClubRecord:

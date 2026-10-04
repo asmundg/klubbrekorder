@@ -65,7 +65,7 @@ class TestDbOperations:
 
 
 from klubbrekorder import compare
-from klubbrekorder.compare import competing_classes, find_new_records, has_bends
+from klubbrekorder.compare import competing_classes, find_new_records
 
 
 class TestCompetingClasses:
@@ -84,20 +84,6 @@ class TestCompetingClasses:
     def test_other_classes_unchanged(self) -> None:
         assert competing_classes("MS") == ["MS"]
         assert competing_classes("KV40") == ["KV40"]
-
-
-class TestHasBends:
-    def test_running_over_110m(self) -> None:
-        assert has_bends("200m")
-        assert has_bends("400m HK 76,2")
-        assert has_bends("Kappgang 3000m")
-        assert has_bends("1 mile")
-
-    def test_straights_and_field(self) -> None:
-        assert not has_bends("60m")
-        assert not has_bends("60m HK 84")
-        assert not has_bends("110m HK 106,7")
-        assert not has_bends("Høyde")
 
 
 class TestFindNewRecords:
@@ -124,9 +110,12 @@ class TestFindNewRecords:
         fed = [ClubRecord(age_class="G17", event="400m", name="New", result="51,52", year=2026)]
         assert self._found(tmp_path, monkeypatch, fed) == [("website", "MJ20", "New", "Old Junior")]
 
-    def test_short_track_run_only_beats_short_track_record(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def test_indoor_result_counts_on_both_pages(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         fed = [ClubRecord(age_class="G17", event="400m", name="New", result="51,52", year=2026, indoor=True)]
-        assert self._found(tmp_path, monkeypatch, fed) == [("short-track", "MJ20", "New", "Old Indoor")]
+        assert self._found(tmp_path, monkeypatch, fed) == [
+            ("short-track", "MJ20", "New", "Old Indoor"),
+            ("website", "MJ20", "New", "Old Junior"),
+        ]
 
     def test_indoor_field_result_counts_on_main_page(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         fed = [ClubRecord(age_class="G17", event="Høyde", name="New", result="1,95", year=2026, indoor=True)]
