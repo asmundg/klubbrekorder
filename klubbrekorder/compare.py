@@ -8,7 +8,7 @@ from .main import (
     load_records,
     parse_result_value,
 )
-from .db import get_best_per_event
+from .db import get_records
 from .normalize import record_event
 
 
@@ -34,79 +34,81 @@ def _group_by_class_and_event(records: list[ClubRecord]) -> dict[tuple[str, str]
     return grouped
 
 
+# Website record pages: the main pages, and the short-track pages for indoor tracks shorter than 400m.
+SOURCES = ("website", "short-track")
+
+
+def has_bends(event: str) -> bool:
+    """Whether a normalized event is a running event over 110m, which a short track changes."""
+    try:
+        if classify_event(event) not in _LOWER_IS_BETTER_CATEGORIES:
+            return False
+    except ValueError:
+        return False
+    m = re.search(r"(\d+)m\b", event)
+    return not (m and int(m.group(1)) <= 110)
+
+
+def _counts_for(source: str, r: ClubRecord) -> bool:
+    """Short-track pages take indoor results; main pages take everything but short-track running round bends."""
+    if source == "short-track":
+        return r.indoor
+    return not (r.indoor and has_bends(record_event(r)))
+
+
+def _best(records: list[ClubRecord], category: str) -> ClubRecord:
+    lower_better = category in _LOWER_IS_BETTER_CATEGORIES
+    return min(records, key=lambda r: parse_result_value(r.result, event_category=category) * (1 if lower_better else -1))
+
+
+def _bests(grouped: dict[tuple[str, str], list[ClubRecord]]) -> dict[tuple[str, str], ClubRecord]:
+    bests: dict[tuple[str, str], ClubRecord] = {}
+    for key, group in grouped.items():
+        try:
+            bests[key] = _best(group, classify_event(key[1]))
+        except (ValueError, IndexError):
+            continue
+    return bests
+
+
+def _baseline(conn: sqlite3.Connection, source: str) -> dict[tuple[str, str], ClubRecord]:
+    """Best website record per (age_class, event key) on one source's pages."""
+    grouped: dict[tuple[str, str], list[ClubRecord]] = {}
+    for r in get_records(conn, source):
+        if _counts_for(source, r):
+            grouped.setdefault((r.age_class, record_event(r)), []).append(r)
+    return _bests(grouped)
+
+
+def _federation_bests(fed_records: list[ClubRecord], source: str) -> dict[tuple[str, str], ClubRecord]:
+    return _bests(_group_by_class_and_event([r for r in fed_records if _counts_for(source, r)]))
+
+
 def find_new_records(
     conn: sqlite3.Connection,
     *,
     outdoor: bool = False,
     indoor: bool = False,
-) -> list[tuple[ClubRecord, ClubRecord]]:
+) -> list[tuple[ClubRecord, ClubRecord, str]]:
     """Find federation records that beat the website baseline.
 
-    Returns list of (federation_record, baseline_record) tuples.
+    Returns (federation_record, baseline_record, source) tuples. Events missing from the baseline are skipped.
     """
-    # Get website baseline: best per (age_class, event)
-    baseline = get_best_per_event(conn, "website")
-
-    # Build normalized lookup: (age_class, normalized_event) -> ClubRecord
-    baseline_norm: dict[tuple[str, str], ClubRecord] = {}
-    for (ac, event), rec in baseline.items():
-        norm = record_event(rec)
-        key = (ac, norm)
-        if key not in baseline_norm:
-            baseline_norm[key] = rec
-        else:
-            # Keep the better of duplicates (can happen with website event name variants)
-            try:
-                cat = classify_event(norm)
-                lower_better = cat in _LOWER_IS_BETTER_CATEGORIES
-                existing = parse_result_value(baseline_norm[key].result, event_category=cat)
-                new = parse_result_value(rec.result, event_category=cat)
-                if lower_better and new < existing:
-                    baseline_norm[key] = rec
-                elif not lower_better and new > existing:
-                    baseline_norm[key] = rec
-            except ValueError:
-                pass
-
-    # Load federation records (live from HTML files)
     fed_records = load_records(outdoor=outdoor, indoor=indoor)
-
-    # Group federation by (age_class, normalized_event) and pick best
-    fed_grouped = _group_by_class_and_event(fed_records)
-
-    new_records: list[tuple[ClubRecord, ClubRecord]] = []
-
-    for key, group in fed_grouped.items():
-        ac, norm_event = key
-        try:
-            cat = classify_event(norm_event)
-        except ValueError:
-            continue
-
-        lower_better = cat in _LOWER_IS_BETTER_CATEGORIES
-
-        # Pick best federation record for this combo
-        best_fed = min(
-            group,
-            key=lambda r: parse_result_value(r.result, event_category=cat) * (1 if lower_better else -1),
-        )
-
-        baseline_rec = baseline_norm.get(key)
-        if baseline_rec is None:
-            # New event not in baseline — skip, too noisy
-            continue
-
-        try:
-            fed_val = parse_result_value(best_fed.result, event_category=cat)
-            base_val = parse_result_value(baseline_rec.result, event_category=cat)
-        except (ValueError, IndexError):
-            continue
-
-        is_better = (fed_val < base_val) if lower_better else (fed_val > base_val)
-        if is_better:
-            new_records.append((best_fed, baseline_rec))
-
-    new_records.sort(key=lambda x: (x[0].age_class, record_event(x[0])))
+    new_records: list[tuple[ClubRecord, ClubRecord, str]] = []
+    for source in SOURCES:
+        baseline = _baseline(conn, source)
+        for key, best_fed in _federation_bests(fed_records, source).items():
+            base = baseline.get(key)
+            if base is None:
+                continue
+            cat = classify_event(key[1])
+            try:
+                if _is_better(best_fed, base, cat, cat in _LOWER_IS_BETTER_CATEGORIES):
+                    new_records.append((best_fed, base, source))
+            except (ValueError, IndexError):
+                continue
+    new_records.sort(key=lambda x: (x[2], x[0].age_class, record_event(x[0])))
     return new_records
 
 
@@ -116,49 +118,23 @@ def current_best_records(
     outdoor: bool = False,
     indoor: bool = False,
 ) -> list[ClubRecord]:
-    """Return the current best record per (age_class, event), merging baseline with federation."""
-    baseline = get_best_per_event(conn, "website")
-
-    # Start with baseline as the current bests (keyed by normalized event)
-    bests: dict[tuple[str, str], ClubRecord] = {}
-    for (ac, event), rec in baseline.items():
-        norm = record_event(rec)
-        key = (ac, norm)
-        if key not in bests:
-            bests[key] = rec
-        else:
-            try:
-                cat = classify_event(norm)
-                lower_better = cat in _LOWER_IS_BETTER_CATEGORIES
-                if _is_better(rec, bests[key], cat, lower_better):
-                    bests[key] = rec
-            except ValueError:
-                pass
-
-    # Override with federation where it's better
+    """Return the current best record per (age_class, event) on each source's pages, merging baseline with federation."""
     fed_records = load_records(outdoor=outdoor, indoor=indoor)
-    fed_grouped = _group_by_class_and_event(fed_records)
-
-    for key, group in fed_grouped.items():
-        try:
+    result: list[ClubRecord] = []
+    for source in SOURCES:
+        bests = _baseline(conn, source)
+        for key, best_fed in _federation_bests(fed_records, source).items():
+            existing = bests.get(key)
+            if existing is None:
+                continue
             cat = classify_event(key[1])
-        except ValueError:
-            continue
-        lower_better = cat in _LOWER_IS_BETTER_CATEGORIES
-        best_fed = min(
-            group,
-            key=lambda r: parse_result_value(r.result, event_category=cat) * (1 if lower_better else -1),
-        )
-        existing = bests.get(key)
-        if existing is None:
-            continue
-        try:
-            if _is_better(best_fed, existing, cat, lower_better):
-                bests[key] = best_fed
-        except (ValueError, IndexError):
-            continue
-
-    return list(bests.values())
+            try:
+                if _is_better(best_fed, existing, cat, cat in _LOWER_IS_BETTER_CATEGORIES):
+                    bests[key] = best_fed
+            except (ValueError, IndexError):
+                continue
+        result.extend(bests.values())
+    return result
 
 
 def _is_better(a: ClubRecord, b: ClubRecord, category: str, lower_better: bool) -> bool:
@@ -167,16 +143,16 @@ def _is_better(a: ClubRecord, b: ClubRecord, category: str, lower_better: bool) 
     return (a_val < b_val) if lower_better else (a_val > b_val)
 
 
-def print_new_records(new_records: list[tuple[ClubRecord, ClubRecord]]) -> None:
+def print_new_records(new_records: list[tuple[ClubRecord, ClubRecord, str]]) -> None:
     """Print new records in a formatted table."""
     if not new_records:
         print("No new records found.")
         return
 
     print(f"Found {len(new_records)} potential new record(s):\n")
-    print(f"{'':1s} {'AC':6s} {'Event':30s} {'New':>10s} {'Name':30s} {'Year':>6s} {'Old':>10s}")
-    print("-" * 99)
-    for fed, base in new_records:
+    print(f"{'':1s} {'Page':11s} {'AC':6s} {'Event':30s} {'New':>10s} {'Name':30s} {'Year':>6s} {'Old':>10s}")
+    print("-" * 111)
+    for fed, base, source in new_records:
         suffix = "i" if fed.indoor else ""
         old_result = base.result
         # Flag suspiciously small improvements (likely format artifacts)
@@ -186,7 +162,7 @@ def print_new_records(new_records: list[tuple[ClubRecord, ClubRecord]]) -> None:
         diff = abs(fed_val - base_val)
         flag = "?" if diff < 1.0 and fed_val > 10 else " "
         print(
-            f"{flag} {fed.age_class:6s} {record_event(fed):30s} "
+            f"{flag} {source:11s} {fed.age_class:6s} {record_event(fed):30s} "
             f"{fed.result + suffix:>10s} "
             f"{fed.name:30s} {fed.year:>6d} {old_result:>10s}"
         )

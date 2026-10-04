@@ -361,9 +361,8 @@ def scrape() -> None:
     data_dir = Path("data/website")
     scrape_all(data_dir)
 
-    records = parse_all_website_pages(data_dir)
     conn = init_db()
-    count = insert_records(conn, records, "website")
+    count = sum(insert_records(conn, records, source) for source, records in parse_all_website_pages(data_dir).items())
     conn.close()
     print(f"\nImported {count} records into database.")
 

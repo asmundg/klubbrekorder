@@ -65,7 +65,7 @@ class TestDbOperations:
 
 
 from klubbrekorder import compare
-from klubbrekorder.compare import competing_classes, find_new_records
+from klubbrekorder.compare import competing_classes, find_new_records, has_bends
 
 
 class TestCompetingClasses:
@@ -86,24 +86,51 @@ class TestCompetingClasses:
         assert competing_classes("KV40") == ["KV40"]
 
 
+class TestHasBends:
+    def test_running_over_110m(self) -> None:
+        assert has_bends("200m")
+        assert has_bends("400m HK 76,2")
+        assert has_bends("Kappgang 3000m")
+        assert has_bends("1 mile")
+
+    def test_straights_and_field(self) -> None:
+        assert not has_bends("60m")
+        assert not has_bends("60m HK 84")
+        assert not has_bends("110m HK 106,7")
+        assert not has_bends("Høyde")
+
+
 class TestFindNewRecords:
-    def test_youth_result_beats_junior_record(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def _found(self, tmp_path, monkeypatch, fed: list[ClubRecord]) -> list[tuple[str, str, str, str]]:  # type: ignore[no-untyped-def]
         conn = init_db(tmp_path / "test.db")
         insert_records(
             conn,
             [
                 ClubRecord(age_class="G17", event="400m", name="Old Youth", result="50,00", year=2003),
                 ClubRecord(age_class="MJ20", event="400m", name="Old Junior", result="52,02", year=2016),
+                ClubRecord(age_class="MJ20", event="Høyde", name="Old High", result="1,90", year=2000),
             ],
             "website",
         )
-        fed = [ClubRecord(age_class="G17", event="400m", name="New", result="51,52", year=2026, indoor=True)]
+        insert_records(
+            conn,
+            [ClubRecord(age_class="MJ20", event="400m", name="Old Indoor", result="53,00", year=2010, indoor=True)],
+            "short-track",
+        )
         monkeypatch.setattr(compare, "load_records", lambda **_: fed)
+        return [(src, f.age_class, f.name, b.name) for f, b, src in find_new_records(conn)]
 
-        found = find_new_records(conn)
+    def test_youth_result_beats_junior_record(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        fed = [ClubRecord(age_class="G17", event="400m", name="New", result="51,52", year=2026)]
+        assert self._found(tmp_path, monkeypatch, fed) == [("website", "MJ20", "New", "Old Junior")]
 
-        assert [(f.age_class, f.name, b.name) for f, b in found] == [("MJ20", "New", "Old Junior")]
+    def test_short_track_run_only_beats_short_track_record(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        fed = [ClubRecord(age_class="G17", event="400m", name="New", result="51,52", year=2026, indoor=True)]
+        assert self._found(tmp_path, monkeypatch, fed) == [("short-track", "MJ20", "New", "Old Indoor")]
 
+    def test_indoor_field_result_counts_on_main_page(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        fed = [ClubRecord(age_class="G17", event="Høyde", name="New", result="1,95", year=2026, indoor=True)]
+        assert self._found(tmp_path, monkeypatch, fed) == [("website", "MJ20", "New", "Old High")]
 
 from klubbrekorder.main import parse_result_value
 

@@ -297,9 +297,9 @@ _PAGE_CONFIG: list[tuple[str, str, dict[str, str]]] = [
 ]
 
 
-def parse_all_website_pages(data_dir: Path) -> list[ClubRecord]:
-    """Parse all downloaded website HTML files and return combined records."""
-    all_records: list[ClubRecord] = []
+def parse_all_website_pages(data_dir: Path) -> dict[str, list[ClubRecord]]:
+    """Parse all downloaded website HTML files. Returns records per source: main pages and short-track pages."""
+    all_records: dict[str, list[ClubRecord]] = {"website": [], "short-track": []}
     for slug, fmt, kwargs in _PAGE_CONFIG:
         path = data_dir / f"{slug}.html"
         html = path.read_text(encoding="utf-8")
@@ -312,5 +312,5 @@ def parse_all_website_pages(data_dir: Path) -> list[ClubRecord]:
         else:
             raise ValueError(f"Unknown format: {fmt}")
         print(f"  {slug}: {len(records)} records")
-        all_records.extend(records)
+        all_records["short-track" if fmt == "c" else "website"].extend(records)
     return all_records
