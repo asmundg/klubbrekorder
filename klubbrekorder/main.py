@@ -222,11 +222,20 @@ def parse_result_value(result: str, *, event_category: str = "") -> float:
     """
     normalized = result.replace(",", ".")
     if ":" in normalized:
-        parts = normalized.split(":")
-        return round(float(parts[0]) * 60 + float(parts[1]), 2)
-    # 3-part dot format: m.ss.f (e.g. "1.05.40" = 1min 05.40s, "10.44.1" = 10min 44.1s)
+        # "3:48.9" = m:ss.f, "1:26:22" = h:mm:ss
+        *whole, last = normalized.split(":")
+        value = 0.0
+        for part in whole:
+            value = value * 60 + int(part)
+        return round(value * 60 + float(last), 2)
+    # 3-part dot format: m.ss.f (e.g. "1.05.40" = 1min 05.40s, "10.44.1" = 10min 44.1s),
+    # except h.mm.ss for road times (e.g. "1.02.04" on a 10 km walk).
+    # ponytail: no Langdistanse/Kappgang track time is under 4 minutes, so a leading 1-3 means hours.
+    # Breaks for road times of 4 hours or more written with commas; none exist in either source.
     dot_parts = normalized.split(".")
     if len(dot_parts) == 3:
+        if event_category in ("Langdistanse", "Kappgang") and int(dot_parts[0]) < 4:
+            return (int(dot_parts[0]) * 60 + int(dot_parts[1])) * 60 + int(dot_parts[2])
         frac = float(f"0.{dot_parts[2]}")
         return round(int(dot_parts[0]) * 60 + int(dot_parts[1]) + frac, 2)
     # 2-part: for road/walking events, interpret as min:sec (e.g. "56,11" = 56:11)

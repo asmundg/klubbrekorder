@@ -62,3 +62,58 @@ class TestDbOperations:
         assert best[("MS", "60m")].result == "6,80"
 
         conn.close()
+
+
+from klubbrekorder import compare
+from klubbrekorder.compare import competing_classes, find_new_records
+
+
+class TestCompetingClasses:
+    def test_youth_counts_for_u20_and_u23(self) -> None:
+        assert competing_classes("G17") == ["G17", "MJ20", "MJ23"]
+        assert competing_classes("J19") == ["J19", "KJ20", "KJ23"]
+
+    def test_over_19_counts_for_u23_only(self) -> None:
+        assert competing_classes("G20") == ["G20", "MJ23"]
+        assert competing_classes("J22") == ["J22", "KJ23"]
+
+    def test_other_classes_unchanged(self) -> None:
+        assert competing_classes("MS") == ["MS"]
+        assert competing_classes("KV40") == ["KV40"]
+
+
+class TestFindNewRecords:
+    def test_youth_result_beats_junior_record(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        conn = init_db(tmp_path / "test.db")
+        insert_records(
+            conn,
+            [
+                ClubRecord(age_class="G17", event="400m", name="Old Youth", result="50,00", year=2003),
+                ClubRecord(age_class="MJ20", event="400m", name="Old Junior", result="52,02", year=2016),
+            ],
+            "website",
+        )
+        fed = [ClubRecord(age_class="G17", event="400m", name="New", result="51,52", year=2026, indoor=True)]
+        monkeypatch.setattr(compare, "load_records", lambda **_: fed)
+
+        found = find_new_records(conn)
+
+        assert [(f.age_class, f.name, b.name) for f, b in found] == [("MJ20", "New", "Old Junior")]
+
+
+from klubbrekorder.main import parse_result_value
+
+
+class TestParseResultValue:
+    def test_three_part_track_time_is_minutes(self) -> None:
+        assert parse_result_value("1,05,40", event_category="Sprint") == 65.4
+        assert parse_result_value("5,43,94", event_category="Langdistanse") == 343.94
+        assert parse_result_value("4,33,4", event_category="Kappgang") == 273.4
+
+    def test_three_part_road_time_is_hours(self) -> None:
+        assert parse_result_value("1,02,04", event_category="Kappgang") == 3724
+        assert parse_result_value("1,04,59", event_category="Langdistanse") == 3899
+
+    def test_colon_hours(self) -> None:
+        assert parse_result_value("1:26:22", event_category="Kappgang") == 5182
+        assert parse_result_value("3:48,9", event_category="Mellomdistanse") == 228.9

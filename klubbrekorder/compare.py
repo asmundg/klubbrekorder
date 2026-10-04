@@ -1,3 +1,4 @@
+import re
 import sqlite3
 
 from .main import (
@@ -9,6 +10,26 @@ from .main import (
 )
 from .db import get_best_per_event
 from .normalize import normalize_event
+
+
+def competing_classes(age_class: str) -> list[str]:
+    """Record classes a result in age_class competes for: 'G17' -> ['G17', 'MJ20', 'MJ23']."""
+    m = re.fullmatch(r"([GJ])(\d+)", age_class)
+    if not m:
+        return [age_class]
+    junior = {"G": "MJ", "J": "KJ"}[m.group(1)]
+    age = int(m.group(2))
+    return [age_class] + [f"{junior}{limit}" for limit in (20, 23) if age < limit]
+
+
+def _group_by_class_and_event(records: list[ClubRecord]) -> dict[tuple[str, str], list[ClubRecord]]:
+    """Group federation records by (record class, normalized event), counting youth results toward junior classes."""
+    grouped: dict[tuple[str, str], list[ClubRecord]] = {}
+    for r in records:
+        norm = normalize_event(r.event)
+        for ac in competing_classes(r.age_class):
+            grouped.setdefault((ac, norm), []).append(r.model_copy(update={"age_class": ac}))
+    return grouped
 
 
 def find_new_records(
@@ -49,11 +70,7 @@ def find_new_records(
     fed_records = load_records(outdoor=outdoor, indoor=indoor)
 
     # Group federation by (age_class, normalized_event) and pick best
-    fed_grouped: dict[tuple[str, str], list[ClubRecord]] = {}
-    for r in fed_records:
-        norm = normalize_event(r.event)
-        key = (r.age_class, norm)
-        fed_grouped.setdefault(key, []).append(r)
+    fed_grouped = _group_by_class_and_event(fed_records)
 
     new_records: list[tuple[ClubRecord, ClubRecord]] = []
 
@@ -118,11 +135,7 @@ def current_best_records(
 
     # Override with federation where it's better
     fed_records = load_records(outdoor=outdoor, indoor=indoor)
-    fed_grouped: dict[tuple[str, str], list[ClubRecord]] = {}
-    for r in fed_records:
-        norm = normalize_event(r.event)
-        key = (r.age_class, norm)
-        fed_grouped.setdefault(key, []).append(r)
+    fed_grouped = _group_by_class_and_event(fed_records)
 
     for key, group in fed_grouped.items():
         try:
